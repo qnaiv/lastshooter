@@ -49,6 +49,269 @@ function roundRect(x, y, w, h, r) {
 }
 function fmt(n) { return n >= 10000 ? (n / 1000).toFixed(1) + 'k' : String(Math.floor(n)); }
 
+// =============================================================================
+// STAGES — ステージごとの設定。数値を変えるだけで難度を調整できます。
+// 配列の先頭がステージ1。定義より先は scaleStage() が最終行を基準に強化します。
+// 各行: 出してよい敵、出現間隔、HP倍率、装甲値、射撃兵の上限、弾幕、弾速、ボス。
+// shooterPatterns に同じ名前を繰り返すとその弾幕の出やすさが上がる。
+// 装甲の減算式（resolveHit）とゲートの通り抜けはここにはありません。
+// デバッグ: ?stage=3 でそのステージから開始（1〜99）。
+// =============================================================================
+const STAGE_CLEAR_HOLD = 1.65;
+
+const STAGES = [
+  {
+    // ステージ1: 通常・高速・タンクのみ。射撃なし、装甲なし。ボスは撃たない。
+    // ショットガンの武器ブロックを1つ保証する。
+    duration: 50,
+    types: ['grunt', 'runner', 'tank'],
+    weights: { grunt: 60, runner: 26, tank: 14 },
+    hpMul: 1,
+    speedMul: 1,
+    spawnEvery: 2.25,
+    spawnEveryEnd: 1.65,
+    waveMin: 1,
+    waveMax: 3,
+    armor: 0,
+    armorPerWave: 0,
+    armorAfter: 999,
+    armorFires: false,
+    shooterMax: 0,
+    shooterPatterns: [],
+    shooterInterval: 9,
+    shooterWaveChance: 0,
+    bulletSpeed: 0,
+    blockEvery: [6.5, 9.5],
+    weaponEvery: [16, 22],
+    gateEvery: [16, 24],
+    guaranteeWeapon: 'sg',
+    guaranteeAt: 5,
+    elite: null,
+    boss: { hp: 520, armor: 0, fires: false, patterns: [], interval: 99, bulletSpeed: 0 },
+  },
+  {
+    // ステージ2: 低装甲を少数。レーザーかロケットを装甲より先に出す。射撃兵はまだ出さない。
+    // ボスはたまに遅い単発の狙い撃ち。
+    duration: 52,
+    types: ['grunt', 'runner', 'tank', 'armor'],
+    weights: { grunt: 48, runner: 20, tank: 18, armor: 14 },
+    hpMul: 1.18,
+    speedMul: 1.03,
+    spawnEvery: 2.05,
+    spawnEveryEnd: 1.45,
+    waveMin: 1,
+    waveMax: 3,
+    armor: 5,
+    armorPerWave: 1,
+    armorAfter: 12,
+    armorFires: false,
+    shooterMax: 0,
+    shooterPatterns: [],
+    shooterInterval: 9,
+    shooterWaveChance: 0,
+    bulletSpeed: 110,
+    blockEvery: [6.5, 9.2],
+    weaponEvery: [15, 21],
+    gateEvery: [16, 24],
+    guaranteeWeapon: 'antiarmor',
+    guaranteeAt: 3.5,
+    elite: null,
+    boss: { hp: 860, armor: 0, fires: true, patterns: ['aim1'], interval: 2.9, bulletSpeed: 100 },
+  },
+  {
+    // ステージ3: 射撃兵が初登場。同時に1体、遅い単発狙い、間隔は長め。
+    duration: 52,
+    types: ['grunt', 'runner', 'tank', 'armor', 'shooter'],
+    weights: { grunt: 40, runner: 16, tank: 14, armor: 16, shooter: 14 },
+    hpMul: 1.38,
+    speedMul: 1.06,
+    spawnEvery: 1.9,
+    spawnEveryEnd: 1.3,
+    waveMin: 2,
+    waveMax: 4,
+    armor: 6,
+    armorPerWave: 1,
+    armorAfter: 0,
+    armorFires: false,
+    shooterMax: 1,
+    shooterPatterns: ['aim1'],
+    shooterInterval: 2.45,
+    shooterWaveChance: 0,
+    bulletSpeed: 128,
+    blockEvery: [6.8, 9.4],
+    weaponEvery: [14, 20],
+    gateEvery: [17, 25],
+    guaranteeWeapon: null,
+    guaranteeAt: 0,
+    elite: null,
+    boss: { hp: 1100, armor: 2, fires: true, patterns: ['aim1'], interval: 2.15, bulletSpeed: 128 },
+  },
+  {
+    // ステージ4: 射撃兵は同時2〜3体。たまに3way。装甲ミニボスが来ることがある。
+    duration: 55,
+    types: ['grunt', 'runner', 'tank', 'armor', 'shooter'],
+    weights: { grunt: 32, runner: 14, tank: 12, armor: 20, shooter: 22 },
+    hpMul: 1.62,
+    speedMul: 1.1,
+    spawnEvery: 1.65,
+    spawnEveryEnd: 1.1,
+    waveMin: 2,
+    waveMax: 4,
+    armor: 7,
+    armorPerWave: 2,
+    armorAfter: 0,
+    armorFires: false,
+    shooterMax: 3,
+    shooterPatterns: ['aim1', 'aim1', 'aim1', 'aim1', 'aim3', 'down3'],
+    shooterInterval: 1.7,
+    shooterWaveChance: 0,
+    bulletSpeed: 155,
+    blockEvery: [7, 9.6],
+    weaponEvery: [14, 20],
+    gateEvery: [18, 26],
+    guaranteeWeapon: null,
+    guaranteeAt: 0,
+    elite: {
+      after: 20,
+      chance: 0.7,
+      hp: 680,
+      armor: 8,
+      fires: true,
+      patterns: ['aim1', 'aim3', 'spread'],
+      interval: 2.15,
+      bulletSpeed: 145,
+    },
+    boss: { hp: 1450, armor: 4, fires: true, patterns: ['aim3', 'spread', 'aim1'], interval: 1.85, bulletSpeed: 155 },
+  },
+  {
+    // ステージ5以降: リング、ボスの扇・螺旋。密度が上がり、当たると痛いローグライト帯。
+    duration: 58,
+    types: ['grunt', 'runner', 'tank', 'armor', 'shooter'],
+    weights: { grunt: 24, runner: 12, tank: 12, armor: 22, shooter: 30 },
+    hpMul: 1.9,
+    speedMul: 1.14,
+    spawnEvery: 1.35,
+    spawnEveryEnd: 0.88,
+    waveMin: 2,
+    waveMax: 5,
+    armor: 9,
+    armorPerWave: 2,
+    armorAfter: 0,
+    armorFires: false,
+    shooterMax: 4,
+    shooterPatterns: ['aim3', 'aim3', 'spread5', 'aim5', 'ring'],
+    shooterInterval: 1.12,
+    shooterWaveChance: 0.2,
+    bulletSpeed: 185,
+    blockEvery: [7.2, 10],
+    weaponEvery: [13, 19],
+    gateEvery: [18, 26],
+    guaranteeWeapon: null,
+    guaranteeAt: 0,
+    elite: {
+      after: 16,
+      chance: 0.85,
+      hp: 880,
+      armor: 10,
+      fires: true,
+      patterns: ['aim3', 'ring', 'spread'],
+      interval: 1.7,
+      bulletSpeed: 170,
+    },
+    boss: { hp: 1900, armor: 6, fires: true, patterns: ['ring', 'fan', 'spiral'], interval: 1.5, bulletSpeed: 188 },
+  },
+];
+
+function cloneStage(base) {
+  return {
+    duration: base.duration,
+    types: base.types.slice(),
+    weights: Object.assign({}, base.weights),
+    hpMul: base.hpMul,
+    speedMul: base.speedMul,
+    spawnEvery: base.spawnEvery,
+    spawnEveryEnd: base.spawnEveryEnd,
+    waveMin: base.waveMin,
+    waveMax: base.waveMax,
+    armor: base.armor,
+    armorPerWave: base.armorPerWave,
+    armorAfter: base.armorAfter,
+    armorFires: base.armorFires,
+    shooterMax: base.shooterMax,
+    shooterPatterns: base.shooterPatterns.slice(),
+    shooterInterval: base.shooterInterval,
+    shooterWaveChance: base.shooterWaveChance,
+    bulletSpeed: base.bulletSpeed,
+    blockEvery: base.blockEvery.slice(),
+    weaponEvery: base.weaponEvery.slice(),
+    gateEvery: base.gateEvery.slice(),
+    guaranteeWeapon: base.guaranteeWeapon,
+    guaranteeAt: base.guaranteeAt,
+    elite: base.elite ? {
+      after: base.elite.after,
+      chance: base.elite.chance,
+      hp: base.elite.hp,
+      armor: base.elite.armor,
+      fires: base.elite.fires,
+      patterns: base.elite.patterns.slice(),
+      interval: base.elite.interval,
+      bulletSpeed: base.elite.bulletSpeed,
+    } : null,
+    boss: {
+      hp: base.boss.hp,
+      armor: base.boss.armor,
+      fires: base.boss.fires,
+      patterns: base.boss.patterns.slice(),
+      interval: base.boss.interval,
+      bulletSpeed: base.boss.bulletSpeed,
+    },
+  };
+}
+
+// extra = 1 が「表の次のステージ」（5段定義ならステージ6）。
+function scaleStage(base, extra) {
+  const s = cloneStage(base);
+  const k = extra;
+  s.hpMul = +(s.hpMul * (1 + 0.22 * k)).toFixed(3);
+  s.speedMul = +Math.min(1.5, s.speedMul * (1 + 0.04 * k)).toFixed(3);
+  s.spawnEvery = +Math.max(0.7, s.spawnEvery * (1 - 0.07 * k)).toFixed(3);
+  s.spawnEveryEnd = +Math.max(0.48, s.spawnEveryEnd * (1 - 0.07 * k)).toFixed(3);
+  s.waveMax = Math.min(8, s.waveMax + k);
+  s.waveMin = Math.min(s.waveMax, s.waveMin + Math.floor(k / 2));
+  s.armor = s.armor + k;
+  s.armorPerWave = Math.min(3, s.armorPerWave + (k >= 3 ? 1 : 0));
+  s.shooterMax = Math.min(6, s.shooterMax + Math.floor(k / 2));
+  s.shooterInterval = +Math.max(0.48, s.shooterInterval * (1 - 0.08 * k)).toFixed(3);
+  s.shooterWaveChance = Math.min(0.55, +(s.shooterWaveChance + 0.04 * k).toFixed(3));
+  s.bulletSpeed = Math.round(s.bulletSpeed * (1 + 0.06 * k));
+  s.boss.hp = Math.round(s.boss.hp * (1 + 0.2 * k));
+  s.boss.armor = s.boss.armor + Math.floor(k * 0.8);
+  s.boss.bulletSpeed = Math.round(s.boss.bulletSpeed * (1 + 0.06 * k));
+  s.boss.interval = +Math.max(0.72, s.boss.interval * (1 - 0.06 * k)).toFixed(3);
+  if (s.elite) {
+    s.elite.hp = Math.round(s.elite.hp * (1 + 0.18 * k));
+    s.elite.armor = s.elite.armor + k;
+    s.elite.bulletSpeed = Math.round(s.elite.bulletSpeed * (1 + 0.06 * k));
+    s.elite.interval = +Math.max(0.7, s.elite.interval * (1 - 0.05 * k)).toFixed(3);
+    s.elite.chance = Math.min(1, +(s.elite.chance + 0.04 * k).toFixed(3));
+  }
+  return s;
+}
+
+function stageConfig(n) {
+  const i = Math.max(1, n | 0);
+  if (i <= STAGES.length) return cloneStage(STAGES[i - 1]);
+  return scaleStage(STAGES[STAGES.length - 1], i - STAGES.length);
+}
+
+function queryStage() {
+  try {
+    const n = parseInt(new URLSearchParams(location.search).get('stage'), 10);
+    if (n >= 1 && n <= 99) return n;
+  } catch (err) {}
+  return 1;
+}
+
 // ---------- weapons ----------
 // Stats are global; each weapon reads them differently.
 // Armor: dealt = max(1, raw - eff). MG/SG use full armor (spray chips and shows ブロック).
@@ -101,20 +364,26 @@ const UPG_KEYS = ['multi', 'rate', 'power', 'ally', 'pierce'];
 // ---------- state ----------
 let state = 'title';
 let stats, player, bullets, ebullets, enemies, blocks, gates, particles, texts, rings;
-let time, score, kills, spawnT, blockT, weaponT, gateT, bossT, eliteT, fireT, laserAcc, allyRocketAcc, allyCursor;
-let shake, flash, best = 0, overT = 0, banner, keepAlive = false;
-let introShooter = false, introArmor = false;
+let time, score, kills, spawnT, blockT, weaponT, gateT, fireT, laserAcc, allyRocketAcc, allyCursor;
+let shake, flash, best = 0, bestStage = 0, overT = 0, banner, keepAlive = false;
+let recordKind = '';
+let stageRecordThisRun = false;
+let stageNum = 1, stageTime = 0, stagePhase = 'fight', clearT = 0, spec = null;
+let eliteRolled = false, guaranteedWeaponSpawned = true, bossGap = 1.8;
 try { best = +localStorage.getItem('adShooterBest') || 0; } catch (e) {}
+try { bestStage = +localStorage.getItem('adShooterBestStage') || 0; } catch (e) {}
 
 function reset() {
   stats = { multi: 1, rate: 7, power: 1, allies: 0, pierce: 0, hp: 5, maxHp: 5, weapon: 'mg' };
   player = { x: W / 2, tx: W / 2, hurt: 0 };
   bullets = []; ebullets = []; enemies = []; blocks = []; gates = []; particles = []; texts = []; rings = [];
   time = 0; score = 0; kills = 0;
-  spawnT = 0.7; blockT = 3.2; weaponT = 8.5; gateT = 25; bossT = 45; eliteT = 52;
   fireT = 0; laserAcc = 0; allyRocketAcc = 0.4; allyCursor = 0;
   shake = 0; flash = 0; banner = null; overT = 0;
-  introShooter = false; introArmor = false;
+  recordKind = '';
+  stageRecordThisRun = false;
+  stageNum = queryStage();
+  beginStage();
 }
 reset();
 
@@ -161,19 +430,71 @@ function popText(x, y, str, color = '#fff', size = 18, life = 0.7) {
 }
 function addShake(v) { shake = Math.min(shake + v, 14); }
 
-function linHp() { return 1 + time / 26; }
-function rollHp(min, max, curve) { return Math.max(1, Math.round(rand(min, max) * (curve || linHp()))); }
+function randRange(pair) { return rand(pair[0], pair[1]); }
 
-function armorValue(rank) {
-  // rank 0 soldier, 1 elite. Early armored enemies start at 5.
-  const base = Math.min(14, 5 + Math.floor(Math.max(0, time - 25) / 22));
-  if (rank === 1) return Math.min(18, base + 4);
-  return base;
+function noteStageReached() {
+  if (state !== 'play') return;
+  if (stageNum > bestStage) {
+    bestStage = stageNum;
+    stageRecordThisRun = true;
+    try { localStorage.setItem('adShooterBestStage', String(bestStage)); } catch (e) {}
+  }
 }
-function bossArmor() {
-  if (time < 75) return 0;
-  return Math.min(9, 3 + Math.floor((time - 75) / 28));
+
+function beginStage() {
+  spec = stageConfig(stageNum);
+  stageTime = 0;
+  stagePhase = 'fight';
+  clearT = 0;
+  spawnT = 0.8;
+  blockT = randRange(spec.blockEvery) * 0.45;
+  if (spec.guaranteeWeapon) {
+    weaponT = spec.guaranteeAt;
+    guaranteedWeaponSpawned = false;
+  } else {
+    weaponT = randRange(spec.weaponEvery);
+    guaranteedWeaponSpawned = true;
+  }
+  gateT = randRange(spec.gateEvery) * 0.45;
+  eliteRolled = false;
+  bossGap = 1.8;
+  banner = { text: 'ステージ' + stageNum, t: 1.7 };
+  noteStageReached();
 }
+
+function allows(type) {
+  return !!(spec && spec.types && spec.types.indexOf(type) !== -1);
+}
+
+function armorAllowed() {
+  if (!spec || spec.armor <= 0 || !allows('armor')) return false;
+  if (stageTime < (spec.armorAfter || 0)) return false;
+  return true;
+}
+
+function stageProgress() {
+  return clamp(stageTime / Math.max(1, spec.duration), 0, 1);
+}
+
+function stageHpScale() {
+  return spec.hpMul * (1 + stageProgress() * 0.18);
+}
+
+function rollHp(min, max) {
+  return Math.max(1, Math.round(rand(min, max) * stageHpScale()));
+}
+
+function currentSpawnEvery() {
+  const u = stageProgress();
+  return spec.spawnEvery + (spec.spawnEveryEnd - spec.spawnEvery) * u;
+}
+
+function waveCount() {
+  const u = stageProgress();
+  const hi = Math.max(spec.waveMin, Math.round(spec.waveMin + (spec.waveMax - spec.waveMin) * u));
+  return randi(spec.waveMin, hi);
+}
+
 function firingCount() {
   let n = 0;
   for (const e of enemies) if (!e.dead && e.fires && e.type !== 'boss' && e.type !== 'elite') n++;
@@ -183,48 +504,63 @@ function aliveType(type) {
   for (const e of enemies) if (!e.dead && e.type === type) return true;
   return false;
 }
-function pickShooterPattern(t) {
-  if (t < 32) return Math.random() < 0.55 ? 'aim1' : 'down1';
-  if (t < 60) return pick(['aim1', 'aim3', 'down3']);
-  if (t < 100) return pick(['aim3', 'spread5', 'down3', 'aim5']);
-  return pick(['aim5', 'spread5', 'ring', 'aim3']);
-}
 
 // ---------- spawning ----------
 function spawnEnemy(type, opts) {
   opts = opts || {};
-  const dlin = linHp();
-  let e;
+  const sm = (spec && spec.speedMul) || 1;
+  if (type === 'shooter' && (!allows('shooter') || spec.shooterMax <= 0 || (firingCount() >= spec.shooterMax && !opts.force))) type = 'grunt';
+  if (type === 'armor' && !armorAllowed()) type = 'grunt';
+  let e = null;
   if (type === 'boss') {
-    const hp = Math.round(820 * (1 + time / 48));
-    e = { type, x: W / 2, y: -80, r: 52, hp, maxHp: hp, vy: 32, color: '#8e2de2', score: 800, wob: 0, armor: bossArmor(), fires: true, stopY: 158, atk: 'ring', atkT: 0.4, spin: rand(0, 6), volleys: 0 };
+    const b = spec.boss;
+    const hp = Math.max(1, b.hp | 0);
+    const canFire = !!(b.fires && b.patterns && b.patterns.length && b.bulletSpeed > 0);
+    e = {
+      type, x: W / 2, y: -80, r: 52, hp, maxHp: hp, vy: 32, color: '#8e2de2',
+      score: 800 + (stageNum - 1) * 180, wob: 0, armor: b.armor || 0, fires: canFire,
+      stopY: 158, atk: null, atkT: b.interval || 2, spin: rand(0, 6), volleys: 0,
+    };
     banner = { text: '⚠ ボス出現！ ⚠', t: 2.1 };
   } else if (type === 'elite') {
-    const hp = Math.round(780 * (1 + time / 55));
-    const armor = armorValue(1);
-    e = { type, x: rand(90, W - 90), y: -70, r: 40, hp, maxHp: hp, vy: 30, color: '#6e7788', score: 350, wob: Math.random() * 6, armor, fires: true, stopY: rand(150, 210), atk: 'volley', atkT: 0.3, spin: rand(0, 5), volleys: 0 };
+    const el = spec.elite || { hp: 700, armor: (spec.armor || 0) + 3, fires: false, patterns: [], interval: 2, bulletSpeed: 0 };
+    const hp = Math.max(1, Math.round(el.hp * (1 + stageProgress() * 0.08)));
+    const canFire = !!(el.fires && el.patterns && el.patterns.length && el.bulletSpeed > 0);
+    e = {
+      type, x: rand(90, W - 90), y: -70, r: 40, hp, maxHp: hp, vy: 30, color: '#6e7788',
+      score: 350 + (stageNum - 1) * 40, wob: Math.random() * 6, armor: el.armor || 0, fires: canFire,
+      stopY: rand(150, 210), atk: null, atkT: el.interval || 2, spin: rand(0, 5), volleys: 0, eliteSpec: el,
+    };
     banner = { text: '⚠ 装甲ボス出現！ ⚠', t: 2.1 };
   } else if (type === 'armor') {
-    const hp = Math.round(rand(110, 160) * (1 + time / 34));
-    const fires = opts.fires != null ? opts.fires : (time > 32 && Math.random() < 0.6 && firingCount() < 6);
-    e = { type, x: rand(46, W - 46), y: -44, r: 26, hp, maxHp: hp, vy: rand(26, 38), color: '#9aa3b5', score: 70, wob: Math.random() * 6, armor: armorValue(0), fires, stopY: rand(190, 340), pattern: fires ? pickShooterPattern(time) : null, fireT: rand(0.35, 0.9), hold: false };
+    const hp = Math.max(1, Math.round(rand(110, 160) * stageHpScale()));
+    const pats = spec.shooterPatterns || [];
+    const canFire = !!(spec.armorFires && spec.shooterMax > 0 && pats.length && firingCount() < spec.shooterMax);
+    e = {
+      type, x: rand(46, W - 46), y: -44, r: 26, hp, maxHp: hp, vy: rand(26, 38) * sm,
+      color: '#9aa3b5', score: 70, wob: Math.random() * 6, armor: spec.armor, fires: canFire,
+      stopY: rand(190, 340), pattern: canFire ? pick(pats) : null, fireT: rand(0.45, 1), hold: false,
+    };
   } else if (type === 'shooter') {
-    if (firingCount() >= 6 && !opts.force) type = 'grunt';
-  }
-  if (type === 'shooter') {
-    const hp = rollHp(16, 24, dlin);
-    e = { type, x: rand(36, W - 36), y: -28, r: 17, hp, maxHp: hp, vy: rand(76, 102), color: '#ff3d8e', score: 35, wob: Math.random() * 6, armor: 0, fires: true, stopY: rand(155, 300), pattern: opts.pattern || pickShooterPattern(time), fireT: rand(0.28, 0.7), hold: false };
+    const hp = rollHp(16, 24);
+    const pats = spec.shooterPatterns || [];
+    e = {
+      type, x: rand(36, W - 36), y: -28, r: 17, hp, maxHp: hp, vy: rand(76, 102) * sm,
+      color: '#ff3d8e', score: 35, wob: Math.random() * 6, armor: 0, fires: true,
+      stopY: rand(155, 300), pattern: opts.pattern || (pats.length ? pick(pats) : 'aim1'),
+      fireT: opts.fireT != null ? opts.fireT : rand(spec.shooterInterval * 0.4, spec.shooterInterval),
+      hold: false,
+    };
   } else if (type === 'tank') {
-    const hp = rollHp(18, 26, dlin);
-    e = { type, x: rand(50, W - 50), y: -40, r: 28, hp, maxHp: hp, vy: rand(30, 42), color: '#5a6bff', score: 40, wob: Math.random() * 6, armor: 0, fires: false };
+    const hp = rollHp(18, 26);
+    e = { type, x: rand(50, W - 50), y: -40, r: 28, hp, maxHp: hp, vy: rand(30, 42) * sm, color: '#5a6bff', score: 40, wob: Math.random() * 6, armor: 0, fires: false };
   } else if (type === 'runner') {
-    const hp = rollHp(2, 3.4, dlin);
-    e = { type, x: rand(30, W - 30), y: -20, r: 14, hp, maxHp: hp, vy: rand(100, 132) + time * 0.25, color: '#ffd23f', score: 15, wob: Math.random() * 6, armor: 0, fires: false };
-  } else if (type === 'grunt') {
-    const hp = rollHp(3, 5, dlin);
-    e = { type: 'grunt', x: rand(30, W - 30), y: -24, r: 18, hp, maxHp: hp, vy: rand(50, 70) + time * 0.22, color: '#ff4d4d', score: 10, wob: Math.random() * 6, armor: 0, fires: false };
+    const hp = rollHp(2, 3.4);
+    e = { type, x: rand(30, W - 30), y: -20, r: 14, hp, maxHp: hp, vy: rand(100, 132) * sm, color: '#ffd23f', score: 15, wob: Math.random() * 6, armor: 0, fires: false };
+  } else {
+    const hp = rollHp(3, 5);
+    e = { type: 'grunt', x: rand(30, W - 30), y: -24, r: 18, hp, maxHp: hp, vy: rand(50, 70) * sm, color: '#ff4d4d', score: 10, wob: Math.random() * 6, armor: 0, fires: false };
   }
-  if (!e) return null;
   e.flash = 0; e.blockCd = 0; e.numCd = 0; e.age = 0; e.dead = false;
   if (opts.x != null) e.x = opts.x;
   if (opts.y != null) e.y = opts.y;
@@ -236,55 +572,80 @@ function spawnEnemy(type, opts) {
   return e;
 }
 
+function rollEnemyType() {
+  const w = spec.weights || {};
+  const entries = [];
+  const add = (type, weight) => { if (weight > 0 && allows(type)) entries.push({ type, weight }); };
+  add('grunt', w.grunt || 0);
+  add('runner', w.runner || 0);
+  add('tank', w.tank || 0);
+  if (armorAllowed()) add('armor', w.armor || 0);
+  if (spec.shooterMax > 0 && firingCount() < spec.shooterMax) add('shooter', w.shooter || 0);
+  if (!entries.length) return 'grunt';
+  let sum = 0;
+  for (let i = 0; i < entries.length; i++) sum += entries[i].weight;
+  let r = Math.random() * sum;
+  for (let i = 0; i < entries.length; i++) {
+    r -= entries[i].weight;
+    if (r <= 0) return entries[i].type;
+  }
+  return 'grunt';
+}
+
 function spawnWave() {
-  if (time > 40 && Math.random() < 0.22) {
-    const n = randi(3, Math.min(5, 2 + Math.floor(time / 45)));
-    const gap = (W - 70) / Math.max(n - 1, 1);
-    const pat = time > 95 ? pick(['aim5', 'spread5', 'ring']) : pick(['aim3', 'down3', 'spread5']);
-    for (let i = 0; i < n; i++) {
-      spawnEnemy('shooter', { force: i < 4, x: 36 + gap * i, y: -24 - (i % 2) * 26, stopY: rand(150, 250), pattern: pat, fireT: 0.35 + i * 0.12 });
+  if (spec.shooterWaveChance > 0 && spec.shooterMax > 0 && allows('shooter') && Math.random() < spec.shooterWaveChance) {
+    const room = spec.shooterMax - firingCount();
+    const count = Math.min(room, randi(2, Math.max(2, spec.shooterMax)));
+    if (count > 0) {
+      const gap = (W - 70) / Math.max(count - 1, 1);
+      const pats = spec.shooterPatterns;
+      for (let i = 0; i < count; i++) {
+        spawnEnemy('shooter', {
+          force: true,
+          x: 36 + gap * i,
+          y: -24 - (i % 2) * 26,
+          stopY: rand(150, 250),
+          pattern: pats.length ? pats[i % pats.length] : 'aim1',
+          fireT: 0.45 + i * 0.16,
+        });
+      }
+      return;
     }
-    return;
   }
-  const n = Math.min(1 + Math.floor(time / 15), 7);
-  if (Math.random() < 0.3) {
-    const gap = (W - 60) / Math.max(n - 1, 1);
-    for (let i = 0; i < n; i++) {
-      spawnEnemy(time > 15 && Math.random() < 0.25 ? 'shooter' : 'grunt', { x: 30 + gap * i, y: -24 - (i % 2) * 16 });
-    }
-    return;
-  }
+  const n = waveCount();
   let armorN = 0;
   for (let i = 0; i < n; i++) {
     let type = rollEnemyType();
-    if (type === 'armor' && ++armorN > 2) type = 'grunt';
-    spawnEnemy(type, { y: -24 - rand(0, 100) });
+    if (type === 'armor') {
+      if (armorN >= spec.armorPerWave) type = 'grunt';
+      else armorN++;
+    }
+    spawnEnemy(type, { y: -24 - rand(0, 90) });
   }
 }
-function rollEnemyType() {
-  if (time < 8) return Math.random() < 0.22 ? 'runner' : 'grunt';
-  const r = Math.random();
-  const shooterP = time < 15 ? 0 : Math.min(0.34, 0.14 + (time - 15) / 170);
-  const armorP = time < 25 ? 0 : Math.min(0.28, 0.1 + (time - 25) / 190);
-  const tankP = time < 18 ? 0 : 0.1;
-  const runnerP = 0.18;
-  if (r < armorP) return 'armor';
-  if (r < armorP + shooterP) return 'shooter';
-  if (r < armorP + shooterP + tankP) return 'tank';
-  if (r < armorP + shooterP + tankP + runnerP) return 'runner';
-  return 'grunt';
+
+function blockSize(base, span, cap) {
+  const grown = base + (stageNum - 1) * 3 + Math.floor(stageTime / 10) * 2;
+  return clamp(randi(grown, grown + span), 12, cap);
 }
 function spawnBlock() {
   const key = stats.hp < 3 && Math.random() < 0.35 ? 'heal' : pick(UPG_KEYS);
-  const base = 14 + Math.floor(time / 6) * 3;
-  const n = clamp(randi(base, base + 18), 12, 70 + Math.floor(time / 3));
-  blocks.push({ kind: 'upgrade', key, x: rand(70, W - 70), y: -50, w: 110, h: 70, n, max: n, vy: 46 + Math.min(time * 0.18, 28), flash: 0, pulse: 0, dead: false, laserCd: 0 });
+  const n = blockSize(14, 18, 64 + stageNum * 6);
+  blocks.push({ kind: 'upgrade', key, x: rand(70, W - 70), y: -50, w: 110, h: 70, n, max: n, vy: 46 + Math.min(stageNum * 2, 24), flash: 0, pulse: 0, dead: false, laserCd: 0 });
 }
-function spawnWeaponBlock() {
+function chooseWeaponKey(forced) {
+  if (forced === 'antiarmor') {
+    const prefer = ['laser', 'rocket'].filter(id => id !== stats.weapon);
+    return pick(prefer.length ? prefer : ['laser', 'rocket']);
+  }
+  if (forced && WEAPONS[forced] && forced !== stats.weapon) return forced;
   const options = WEAPON_IDS.filter(id => id !== stats.weapon);
-  const key = pick(options);
-  const n = clamp(14 + Math.floor(time / 5) * 2, 14, 46);
-  blocks.push({ kind: 'weapon', key, x: rand(80, W - 80), y: -64, w: 136, h: 78, n, max: n, vy: 40 + Math.min(time * 0.14, 22), flash: 0, pulse: 0, dead: false, laserCd: 0 });
+  return pick(options.length ? options : WEAPON_IDS);
+}
+function spawnWeaponBlock(forced) {
+  const key = chooseWeaponKey(forced);
+  const n = blockSize(14, 10, 40 + stageNum * 4);
+  blocks.push({ kind: 'weapon', key, x: rand(80, W - 80), y: -64, w: 136, h: 78, n, max: n, vy: 40 + Math.min(stageNum * 1.5, 20), flash: 0, pulse: 0, dead: false, laserCd: 0 });
 }
 function spawnGates() {
   const opts = [
@@ -322,55 +683,82 @@ function emitRing(x, y, rot, n, spd) {
   for (let i = 0; i < n; i++) emitDir(x, y, rot + (i / n) * Math.PI * 2, spd);
 }
 function emitPattern(e, pattern) {
-  const spd = 150 + Math.min(105, time * 0.48);
+  const spd = spec.bulletSpeed;
+  if (!(spd > 0)) return;
   const x = e.x, y = e.y + e.r * 0.25;
   if (pattern === 'down1') emitDown(x, y, 1, 0, spd);
   else if (pattern === 'down3') emitDown(x, y, 3, 0.24, spd);
-  else if (pattern === 'spread5') emitDown(x, y, 5, 0.2, spd * 0.96);
+  else if (pattern === 'spread' || pattern === 'spread5') emitDown(x, y, 5, 0.2, spd * 0.96);
   else if (pattern === 'aim3') emitAim(x, y, 3, 0.2, spd);
   else if (pattern === 'aim5') emitAim(x, y, 5, 0.16, spd);
+  else if (pattern === 'fan') emitAim(x, y, 7, 0.16, spd * 0.92);
   else if (pattern === 'ring') { emitRing(x, y, e.spin || 0, 8, spd * 0.74); e.spin = (e.spin || 0) + 0.28; }
   else emitAim(x, y, 1, 0, spd);
 }
+function patternAllowed(list, pattern) {
+  return !!(list && list.indexOf(pattern) >= 0);
+}
 function updateEnemyFire(e, dt) {
+  if (!e.fires) return;
   if (e.y < 36 || e.y > DEFENSE_Y - 30) return;
   if (e.type === 'boss' || e.type === 'elite') { updateBigFire(e, dt); return; }
+  if (spec.shooterMax <= 0 || !(spec.bulletSpeed > 0)) return;
+  const allowed = spec.shooterPatterns;
+  if (!allowed || !allowed.length) return;
   e.fireT -= dt;
   if (e.fireT > 0) return;
-  emitPattern(e, e.pattern || 'aim1');
-  if (time > 70 && Math.random() < 0.28) e.pattern = pickShooterPattern(time);
-  e.fireT = Math.max(0.46, 1.9 - time * 0.01);
+  let pattern = e.pattern;
+  if (!patternAllowed(allowed, pattern)) pattern = pick(allowed);
+  emitPattern(e, pattern);
+  if (Math.random() < 0.3) e.pattern = pick(allowed);
+  e.fireT = spec.shooterInterval * rand(0.92, 1.12);
 }
 function updateBigFire(e, dt) {
+  if (!e.fires) return;
+  const conf = e.type === 'elite' ? e.eliteSpec : spec.boss;
+  if (!conf || !conf.patterns || !conf.patterns.length) return;
+  const spd = conf.bulletSpeed || 0;
+  if (!(spd > 0)) return;
+
+  if (e.atk === 'spiral') {
+    e.spiralT = (e.spiralT || 0) - dt;
+    e.fireT -= dt;
+    if (e.fireT <= 0) {
+      e.spin = (e.spin || 0) + 0.4;
+      emitDir(e.x, e.y, e.spin, spd * 0.68);
+      emitDir(e.x, e.y, e.spin + Math.PI, spd * 0.68);
+      e.fireT = 0.09;
+    }
+    if (e.spiralT <= 0) {
+      e.atk = null;
+      e.atkT = conf.interval;
+    }
+    return;
+  }
+
   e.atkT -= dt;
-  if (e.atkT <= 0) {
-    e.atk = e.type === 'boss' ? pick(['ring', 'volley', 'spiral']) : pick(['ring', 'volley', 'spread']);
-    e.atkT = e.atk === 'spiral' ? 2.3 : 2.1;
-    e.fireT = 0.18;
-    e.volleys = 0;
-    e.spin = e.spin || rand(0, 6);
+  if (e.atkT > 0) return;
+  const next = pick(conf.patterns);
+  if (next === 'spiral') {
+    e.atk = 'spiral';
+    e.spiralT = 1.35;
+    e.fireT = 0;
+    e.spin = rand(0, 6);
+    return;
   }
-  e.fireT -= dt;
-  if (e.fireT > 0) return;
-  const spd = 138 + Math.min(100, time * 0.38);
-  if (e.atk === 'ring') {
-    emitRing(e.x, e.y + 6, e.spin || 0, e.type === 'boss' ? 16 : 12, spd * 0.76);
-    e.spin = (e.spin || 0) + 0.22;
-    e.fireT = e.type === 'boss' ? Math.max(0.85, 1.25 - time * 0.002) : 1.2;
-  } else if (e.atk === 'volley') {
-    emitAim(e.x, e.y + 8, e.type === 'boss' ? 5 : 4, 0.17, spd);
-    e.volleys = (e.volleys || 0) + 1;
-    e.fireT = 0.4;
-    if (e.volleys >= 3) e.atkT = 0;
-  } else if (e.atk === 'spiral') {
-    e.spin = (e.spin || 0) + 0.4;
-    emitDir(e.x, e.y, e.spin, spd * 0.68);
-    emitDir(e.x, e.y, e.spin + Math.PI, spd * 0.68);
-    e.fireT = 0.09;
-  } else {
-    emitDown(e.x, e.y + 8, 7, 0.16, spd * 0.84);
-    e.fireT = 0.82;
-  }
+  const x = e.x, y = e.y + 8;
+  if (next === 'aim1') emitAim(x, y, 1, 0, spd);
+  else if (next === 'aim3') emitAim(x, y, 3, 0.2, spd);
+  else if (next === 'aim5') emitAim(x, y, 5, 0.16, spd);
+  else if (next === 'fan') emitAim(x, y, 7, 0.16, spd * 0.92);
+  else if (next === 'spread' || next === 'spread5') emitDown(x, y, 5, 0.18, spd * 0.88);
+  else if (next === 'down3') emitDown(x, y, 3, 0.24, spd);
+  else if (next === 'ring') {
+    emitRing(x, y, e.spin || 0, e.type === 'boss' ? 16 : 12, spd * 0.72);
+    e.spin = (e.spin || 0) + 0.35;
+  } else emitAim(x, y, 1, 0, spd);
+  e.atk = null;
+  e.atkT = conf.interval;
 }
 
 // ---------- player weapons ----------
@@ -551,7 +939,21 @@ function hurtPlayer(amount) {
     if (keepAlive) { stats.hp = stats.maxHp; return; }
     stats.hp = 0; state = 'over'; overT = 0;
     burst(player.x, PLAYER_Y, '#ffffff', 60, 400, 6);
-    if (score > best) { best = score; try { localStorage.setItem('adShooterBest', best); } catch (e) {} }
+    recordKind = '';
+    let save = false;
+    if (score > best) {
+      best = score;
+      recordKind = 'score';
+      save = true;
+    }
+    if (stageRecordThisRun) {
+      if (!recordKind) recordKind = 'stage';
+      save = true;
+    }
+    if (save) {
+      try { localStorage.setItem('adShooterBest', String(best)); } catch (e) {}
+      try { localStorage.setItem('adShooterBestStage', String(bestStage)); } catch (e) {}
+    }
   }
 }
 function killAllyAt(x, y) {
@@ -584,7 +986,7 @@ function applyWeapon(id, x, y) {
   fireT = 0.12; laserAcc = 0;
   const w = WEAPONS[id];
   popText(x, y - 14, w.name + '装備！', w.color, 28, 1.25);
-  banner = { text: w.name + ' に持ち替え！', t: 1.5 };
+  if (stagePhase !== 'clear') banner = { text: w.name + ' に持ち替え！', t: 1.5 };
   burst(x, y, w.color, 48, 380, 6);
   rings.push({ x, y, r: 12, life: 0.45, color: w.color });
   addShake(5);
@@ -613,12 +1015,49 @@ function killEnemy(e) {
     rings.push({ x: e.x, y: e.y, r: 18, life: 0.65, color: e.type === 'boss' ? '#d9a7ff' : '#d5deea' });
     spawnBlockAt(e.x, e.y);
   }
+  if (e.type === 'boss' && stagePhase === 'boss') {
+    for (const o of enemies) o.dead = true;
+    for (const b of ebullets) b.dead = true;
+    stagePhase = 'clear';
+    clearT = STAGE_CLEAR_HOLD;
+    banner = { text: 'ステージ' + stageNum + ' クリア！', t: STAGE_CLEAR_HOLD };
+  }
 }
 function bodyDamage(e) {
   if (e.type === 'boss') return 5;
   if (e.type === 'elite') return 3;
   if (e.type === 'armor' || e.type === 'tank') return 2;
   return 1;
+}
+
+function runFightSpawns(dt) {
+  if (spec.elite && !eliteRolled && stageTime >= spec.elite.after && stageTime < spec.duration - 12) {
+    eliteRolled = true;
+    if (Math.random() < spec.elite.chance && !aliveType('elite')) spawnEnemy('elite');
+  }
+  spawnT -= dt;
+  if (spawnT <= 0) {
+    spawnWave();
+    spawnT = currentSpawnEvery();
+  }
+  blockT -= dt;
+  if (blockT <= 0) {
+    spawnBlock();
+    blockT = randRange(spec.blockEvery);
+  }
+  weaponT -= dt;
+  if (weaponT <= 0) {
+    if (!guaranteedWeaponSpawned && spec.guaranteeWeapon) {
+      spawnWeaponBlock(spec.guaranteeWeapon);
+      guaranteedWeaponSpawned = true;
+    } else spawnWeaponBlock();
+    weaponT = randRange(spec.weaponEvery);
+  }
+  gateT -= dt;
+  if (gateT <= 0) {
+    spawnGates();
+    gateT = randRange(spec.gateEvery);
+  }
 }
 
 // ---------- update ----------
@@ -639,33 +1078,30 @@ function update(dt) {
   player.x += (player.tx - player.x) * Math.min(1, dt * 18);
   player.hurt = Math.max(0, player.hurt - dt);
 
-  if (!introShooter && time >= 15) {
-    introShooter = true;
-    spawnEnemy('shooter', { force: true, x: W * 0.3, y: -20, stopY: 200, pattern: 'aim3', fireT: 0.45 });
-    spawnEnemy('shooter', { force: true, x: W * 0.7, y: -36, stopY: 250, pattern: 'down3', fireT: 0.7 });
-  }
-  if (!introArmor && time >= 25) {
-    introArmor = true;
-    spawnEnemy('armor', { x: W * 0.5, y: -30, fires: true, pattern: 'aim3', fireT: 0.55, armor: 5, stopY: 230 });
-  }
-
-  spawnT -= dt;
-  if (spawnT <= 0) { spawnWave(); spawnT = Math.max(0.72, 2.45 - time * 0.016); }
-  blockT -= dt;
-  if (blockT <= 0) { spawnBlock(); blockT = rand(6.2, 9.2); }
-  weaponT -= dt;
-  if (weaponT <= 0) { spawnWeaponBlock(); weaponT = rand(13, 19); }
-  gateT -= dt;
-  if (gateT <= 0) { spawnGates(); gateT = rand(22, 30); }
-  bossT -= dt;
-  if (bossT <= 0) {
-    if (aliveType('boss')) bossT = 8;
-    else { spawnEnemy('boss'); bossT = 62; }
-  }
-  eliteT -= dt;
-  if (eliteT <= 0) {
-    if (time < 50 || aliveType('elite')) eliteT = 6;
-    else { spawnEnemy('elite'); eliteT = rand(34, 46); }
+  if (stagePhase === 'clear') {
+    clearT -= dt;
+    if (clearT <= 0) {
+      stageNum += 1;
+      beginStage();
+    }
+  } else if (stagePhase === 'fight') {
+    stageTime += dt;
+    if (stageTime >= spec.duration) {
+      stagePhase = 'boss';
+      spawnEnemy('boss');
+    } else {
+      runFightSpawns(dt);
+    }
+  } else if (stagePhase === 'boss') {
+    stageTime += dt;
+    if (aliveType('boss')) bossGap = 1.8;
+    else {
+      bossGap -= dt;
+      if (bossGap <= 0) {
+        spawnEnemy('boss');
+        bossGap = 1.8;
+      }
+    }
   }
 
   firePlayerWeapons(dt);
@@ -1052,6 +1488,8 @@ function drawHUD() {
   ctx.fillText('スコア ' + score, 12, 20);
   ctx.font = 'bold 13px ' + FONT; ctx.fillStyle = '#cfe3ff';
   ctx.fillText('撃破 ' + kills + '   ' + Math.floor(time) + '秒', 12, 46);
+  ctx.font = 'bold 15px ' + FONT; ctx.fillStyle = '#ffe14d'; ctx.textAlign = 'center';
+  ctx.fillText('ステージ' + stageNum, W / 2, 46);
   ctx.textAlign = 'right'; ctx.font = '18px ' + FONT;
   let hs = ''; for (let i = 0; i < stats.maxHp; i++) hs += i < stats.hp ? '❤' : '♡';
   ctx.fillStyle = '#ff4d6d'; ctx.fillText(hs, W - 10, 20);
@@ -1119,11 +1557,12 @@ function render() {
     drawCenterText([
       { t: '撃って強化！', y: 200 + bob, size: 48, c: '#ffe14d' },
       { t: 'ラストシューター', y: 258 + bob, size: 36, c: '#ff4fa3' },
-      { t: '降ってくる敵を撃ちまくれ！', y: 340, size: 20 },
-      { t: '赤く光る敵弾に当たるとハートが減る', y: 378, size: 16, c: '#ff9ec4' },
-      { t: '武器ブロックを壊すと武器が切り替わる', y: 412, size: 16, c: '#9fe3ff' },
-      { t: '装甲兵はレーザーとロケット向き', y: 446, size: 16, c: '#d5deea' },
-      { t: 'ドラッグで左右に移動（自動射撃）', y: 492, size: 16, c: '#cfe3ff' },
+      { t: '降ってくる敵を撃ちまくれ！', y: 328, size: 20 },
+      { t: 'ボスを倒すと次のステージへ', y: 360, size: 16, c: '#ffe9a0' },
+      { t: '赤く光る敵弾に当たるとハートが減る', y: 398, size: 16, c: '#ff9ec4' },
+      { t: '武器ブロックを壊すと武器が切り替わる', y: 434, size: 16, c: '#9fe3ff' },
+      { t: '装甲兵はレーザーとロケット向き', y: 470, size: 16, c: '#d5deea' },
+      { t: 'ドラッグで左右に移動（自動射撃）', y: 508, size: 16, c: '#cfe3ff' },
     ]);
     if (Math.floor(performance.now() / 500) % 2 === 0) drawCenterText([{ t: 'タップしてスタート', y: 580, size: 28 }]);
     drawSoldier(W / 2, 690, 1.5, '#3fa9ff', false);
@@ -1131,13 +1570,16 @@ function render() {
   if (state === 'over') {
     ctx.fillStyle = 'rgba(0,0,0,' + Math.min(0.65, overT) + ')'; ctx.fillRect(0, 0, W, H);
     const lines = [
-      { t: 'ゲームオーバー', y: 230, size: 44, c: '#ff4d6d' },
-      { t: 'スコア  ' + score, y: 310, size: 34, c: '#ffe14d' },
-      { t: 'ベスト  ' + best, y: 358, size: 22 },
-      { t: '撃破 ' + kills + '　生存 ' + Math.floor(time) + '秒', y: 400, size: 18, c: '#cfe3ff' },
-      { t: '武器  ' + WEAPONS[stats.weapon].name, y: 436, size: 18, c: WEAPONS[stats.weapon].color },
+      { t: 'ゲームオーバー', y: 200, size: 42, c: '#ff4d6d' },
+      { t: 'スコア  ' + score, y: 268, size: 32, c: '#ffe14d' },
+      { t: '到達ステージ  ' + stageNum, y: 318, size: 26 },
+      { t: 'ベストスコア  ' + best, y: 362, size: 20, c: '#ffe14d' },
+      { t: 'ベストステージ  ' + bestStage, y: 394, size: 20, c: '#cfe3ff' },
+      { t: '撃破 ' + kills + '　生存 ' + Math.floor(time) + '秒', y: 434, size: 18, c: '#cfe3ff' },
+      { t: '武器  ' + WEAPONS[stats.weapon].name, y: 468, size: 18, c: WEAPONS[stats.weapon].color },
     ];
-    if (score >= best && score > 0) lines.push({ t: '★ 新記録！ ★', y: 486, size: 26, c: '#33e08a' });
+    if (recordKind === 'score') lines.push({ t: '★ 新記録！ ★', y: 516, size: 26, c: '#33e08a' });
+    else if (recordKind === 'stage') lines.push({ t: '★ ステージ記録！ ★', y: 516, size: 24, c: '#33e08a' });
     drawCenterText(lines);
     if (overT > 0.6 && Math.floor(performance.now() / 500) % 2 === 0) drawCenterText([{ t: 'タップでリトライ', y: 570, size: 28 }]);
   }
@@ -1158,20 +1600,33 @@ window.__game = {
   get stats() { return stats; },
   get score() { return score; },
   get time() { return time; },
+  get stage() { return stageNum; },
+  get phase() { return stagePhase; },
+  get stageTime() { return stageTime; },
+  get bestStage() { return bestStage; },
+  get banner() { return banner ? banner.text : ''; },
   get weapon() { return stats.weapon; },
   get hp() { return stats.hp; },
+  get spec() { return spec; },
   get counts() {
-    let armor = 0, shooters = 0, weaponBlocks = 0;
+    let armor = 0, shooters = 0, weaponBlocks = 0, firing = 0;
     for (const e of enemies) {
-      if ((e.armor || 0) > 0) armor++;
-      if (e.fires) shooters++;
+      if (e.dead) continue;
+      if ((e.armor || 0) > 0 && e.type !== 'boss') armor++;
+      if (e.type === 'shooter') shooters++;
+      if (e.fires && e.type !== 'boss' && e.type !== 'elite') firing++;
     }
-    for (const b of blocks) if (b.kind === 'weapon') weaponBlocks++;
-    return { enemies: enemies.length, blocks: blocks.length, gates: gates.length, bullets: bullets.length, ebullets: ebullets.length, particles: particles.length, armor, shooters, weaponBlocks };
+    for (const b of blocks) if (!b.dead && b.kind === 'weapon') weaponBlocks++;
+    return { enemies: enemies.length, blocks: blocks.length, gates: gates.length, bullets: bullets.length, ebullets: ebullets.length, particles: particles.length, armor, shooters, firing, weaponBlocks };
   },
   world() { return { gates, bullets, ebullets, enemies, blocks, player, stats, texts }; },
   setKeepAlive(v) { keepAlive = !!v; },
-  skip(t) { time += t; gateT -= t; bossT -= t; eliteT -= t; weaponT -= t; },
+  step(dt) { update(typeof dt === 'number' ? dt : 1 / 60); },
+  start() { state = 'play'; reset(); },
+  jumpToBoss() { if (stagePhase === 'fight') stageTime = spec.duration; },
+  killStageBoss() {
+    for (const e of enemies) if (e.type === 'boss' && !e.dead) { e.hp = 0; killEnemy(e); }
+  },
 };
 })();
 </script>

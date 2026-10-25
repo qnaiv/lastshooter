@@ -254,23 +254,24 @@ function update(dt) {
   for (const b of bullets) {
     b.x += b.vx * dt; b.y += b.vy * dt;
     if (b.y < -20 || b.x < -20 || b.x > W + 20) { b.dead = true; continue; }
-    // blocks first (they're the juicy target)
+    // Gates are permeable. A bullet bumps each gate once, then keeps going
+    // so enemies and power-up blocks behind the band can still be hit.
+    for (const g of gates) {
+      if (g.dead || g.used || (b.gates && b.gates.has(g))) continue;
+      if (b.x >= g.x && b.x < g.x + g.w && b.y > g.y - g.h / 2 && b.y < g.y + g.h / 2) {
+        (b.gates || (b.gates = new Set())).add(g);
+        g.acc += 1; g.flash = 0.05;
+        const need = g.v < 0 ? 4 : 20, cap = GATE_CAP[g.key];
+        if (g.acc >= need && g.v < cap) { g.acc = 0; g.v += 1; popText(b.x, g.y, '+1', '#9fffd0', 16, 0.5); }
+      }
+    }
+    // power-up blocks still absorb the bullet
     for (const k of blocks) {
-      if (k.dead || (b.hit && b.hit.has(k))) continue;
+      if (k.dead || b.dead || (b.hit && b.hit.has(k))) continue;
       if (b.x > k.x - k.w / 2 && b.x < k.x + k.w / 2 && b.y > k.y - k.h / 2 && b.y < k.y + k.h / 2) {
         k.n -= 1; k.flash = 0.06; k.pulse = 0.12;
         burst(b.x, b.y, UPGRADES[k.key].color, 2, 120, 3);
         if (k.n <= 0) { k.dead = true; applyUpgrade(k.key, k.x, k.y); score += 50; }
-        b.dead = true; break;
-      }
-    }
-    if (b.dead) continue;
-    for (const g of gates) {
-      if (g.dead || g.used) continue;
-      if (b.x > g.x && b.x < g.x + g.w && b.y > g.y - g.h / 2 && b.y < g.y + g.h / 2) {
-        g.acc += 1; g.flash = 0.05;
-        const need = g.v < 0 ? 4 : 20, cap = GATE_CAP[g.key];
-        if (g.acc >= need && g.v < cap) { g.acc = 0; g.v += 1; popText(b.x, g.y, '+1', '#9fffd0', 16, 0.5); }
         b.dead = true; break;
       }
     }
@@ -444,11 +445,18 @@ function drawBlock(k) {
 
 function drawGate(g) {
   const good = g.v >= 0;
-  const c = good ? 'rgba(40,200,255,' : 'rgba(255,60,90,';
-  ctx.fillStyle = c + (g.flash > 0 ? 0.75 : 0.45) + ')';
-  ctx.fillRect(g.x + 4, g.y - g.h / 2, g.w - 8, g.h);
+  const top = g.y - g.h / 2;
+  // Body stays glassy so enemies standing behind the band remain visible.
+  ctx.save();
+  ctx.globalAlpha = g.flash > 0 ? 0.48 : 0.26;
+  ctx.fillStyle = good ? '#28c8ff' : '#ff3c5a';
+  ctx.fillRect(g.x + 4, top, g.w - 8, g.h);
+  ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = g.flash > 0 ? 0.95 : 0.72;
   ctx.fillStyle = good ? '#7ee8ff' : '#ff8fa3';
-  ctx.fillRect(g.x + 4, g.y - g.h / 2, 6, g.h); ctx.fillRect(g.x + g.w - 10, g.y - g.h / 2, 6, g.h);
+  ctx.fillRect(g.x + 4, top, 6, g.h); ctx.fillRect(g.x + g.w - 10, top, 6, g.h);
+  ctx.restore();
   ctx.font = 'bold 22px ' + FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const t = g.unit + ' ' + (good ? '+' : '') + g.v;
   ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.strokeText(t, g.x + g.w / 2, g.y);
@@ -496,9 +504,9 @@ function render() {
   ctx.save();
   if (shake > 0) ctx.translate(rand(-shake, shake) * 0.5, rand(-shake, shake) * 0.5);
   drawBackground();
+  for (const e of enemies) drawEnemy(e);
   for (const g of gates) drawGate(g);
   for (const k of blocks) drawBlock(k);
-  for (const e of enemies) drawEnemy(e);
   // bullets
   ctx.fillStyle = 'rgba(255,210,63,0.35)';
   for (const b of bullets) ctx.fillRect(b.x - 4, b.y - 9, 8, 20);
@@ -577,6 +585,7 @@ requestAnimationFrame(frame);
 window.__game = { get state() { return state; }, get stats() { return stats; }, get score() { return score; },
   get counts() { return { enemies: enemies.length, blocks: blocks.length, gates: gates.length, bullets: bullets.length, particles: particles.length }; },
   targets() { return { e: enemies.map(o => [o.x, o.y]), k: blocks.map(o => [o.x, o.y]), px: player.x }; },
+  world() { return { gates, bullets, enemies, blocks, player }; },
   skip(t) { time += t; gateT -= t; bossT -= t; } };
 })();
 </script>
